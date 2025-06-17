@@ -3,15 +3,18 @@ const db = require('../config/db');
 
 const Ticket = {
   async create(subject, description, priority, clientUserId, status = 'Open') {
-    const query = `
+    const sql = `
       INSERT INTO Tickets (subject, description, priority, client_user_id, status)
-      VALUES ($1, $2, $3, $4, $5)
-      RETURNING id, subject, description, priority, status, client_user_id, created_at, updated_at;
+      VALUES (?, ?, ?, ?, ?);
     `;
     const values = [subject, description, priority, clientUserId, status];
     try {
-      const { rows } = await db.query(query, values);
-      return rows[0];
+      const result = await db.query(sql, values);
+      const insertId = result.rows.insertId;
+      if (!insertId) {
+        throw new Error('Ticket creation failed, no insertId returned or insertId is invalid.');
+      }
+      return this.findById(insertId); // Fetch the created ticket
     } catch (error) {
       console.error('Error creating ticket:', error);
       throw error;
@@ -19,18 +22,17 @@ const Ticket = {
   },
 
   async findById(id) {
-    // Consider joining with Users table to get client/assignee names directly if often needed
-    const query = `
+    const sql = `
         SELECT t.*,
                uc.name as client_name, uc.email as client_email,
                ua.name as assigned_agent_name, ua.email as assigned_agent_email
         FROM Tickets t
         JOIN Users uc ON t.client_user_id = uc.id
         LEFT JOIN Users ua ON t.assigned_to_user_id = ua.id
-        WHERE t.id = $1;
+        WHERE t.id = ?;
     `;
     try {
-      const { rows } = await db.query(query, [id]);
+      const { rows } = await db.query(sql, [id]);
       return rows[0];
     } catch (error) {
       console.error('Error finding ticket by id:', error);
@@ -39,9 +41,9 @@ const Ticket = {
   },
 
   async findByClientId(clientUserId) {
-    const query = 'SELECT * FROM Tickets WHERE client_user_id = $1 ORDER BY updated_at DESC;';
+    const sql = 'SELECT * FROM Tickets WHERE client_user_id = ? ORDER BY updated_at DESC;';
     try {
-      const { rows } = await db.query(query, [clientUserId]);
+      const { rows } = await db.query(sql, [clientUserId]);
       return rows;
     } catch (error) {
       console.error('Error finding tickets by client id:', error);
@@ -50,21 +52,20 @@ const Ticket = {
   },
 
   async findByAssignedAgentId(agentUserId) {
-    const query = 'SELECT * FROM Tickets WHERE assigned_to_user_id = $1 ORDER BY updated_at DESC;';
+    const sql = 'SELECT * FROM Tickets WHERE assigned_to_user_id = ? ORDER BY updated_at DESC;';
      try {
-      const { rows } = await db.query(query, [agentUserId]);
+      const { rows } = await db.query(sql, [agentUserId]);
       return rows;
-    } catch (error)
-    {
+    } catch (error) {
       console.error('Error finding tickets by agent id:', error);
       throw error;
     }
   },
 
-  async findAll() { // For Admin
-    const query = 'SELECT * FROM Tickets ORDER BY updated_at DESC;';
+  async findAll() {
+    const sql = 'SELECT * FROM Tickets ORDER BY updated_at DESC;';
     try {
-      const { rows } = await db.query(query);
+      const { rows } = await db.query(sql);
       return rows;
     } catch (error) {
       console.error('Error finding all tickets:', error);
@@ -73,10 +74,15 @@ const Ticket = {
   },
 
   async updateStatus(id, status) {
-    const query = 'UPDATE Tickets SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *;';
+    const sql = 'UPDATE Tickets SET status = ?, updated_at = CURRENT_TIMESTAMP(6) WHERE id = ?;';
     try {
-      const { rows } = await db.query(query, [status, id]);
-      return rows[0];
+      const result = await db.query(sql, [status, id]);
+      if (result.rows.affectedRows === 0) {
+        // Optionally, handle case where no row was updated (e.g., ticket not found)
+        // For now, findById will return undefined if not found after an attempted update.
+        console.warn(`Attempted to update status for ticket ID ${id}, but no rows were affected. Ticket might not exist or status is the same.`);
+      }
+      return this.findById(id); // Fetch and return the updated ticket (or undefined if not found)
     } catch (error) {
       console.error('Error updating ticket status:', error);
       throw error;
@@ -84,17 +90,18 @@ const Ticket = {
   },
 
   async assignAgent(id, agentUserId) {
-    const query = 'UPDATE Tickets SET assigned_to_user_id = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *;';
+    const sql = 'UPDATE Tickets SET assigned_to_user_id = ?, updated_at = CURRENT_TIMESTAMP(6) WHERE id = ?;';
     try {
-      const { rows } = await db.query(query, [agentUserId, id]);
-      return rows[0];
+      const result = await db.query(sql, [agentUserId, id]);
+      if (result.rows.affectedRows === 0) {
+        console.warn(`Attempted to assign agent for ticket ID ${id}, but no rows were affected. Ticket might not exist.`);
+      }
+      return this.findById(id); // Fetch and return the updated ticket
     } catch (error) {
       console.error('Error assigning agent to ticket:', error);
       throw error;
     }
   },
-
-  // More methods can be added: updatePriority, search, etc.
 };
 
 module.exports = Ticket;
